@@ -25,6 +25,7 @@
 #include <IOKit/hid/IOHIDManager.h>
 #include <IOKit/hid/IOHIDKeys.h>
 #include <IOKit/IOKitLib.h>
+#include <IOKit/usb/USBSpec.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <wchar.h>
 #include <locale.h>
@@ -33,7 +34,7 @@
 #include <unistd.h>
 #include <dlfcn.h>
 
-#include "hidapi/hidapi.h"
+#include "hidapi.h"
 
 /* Barrier implementation because Mac OSX doesn't have pthread_barrier.
    It also doesn't have clock_gettime(). So much for POSIX and SUSv2.
@@ -182,7 +183,7 @@ static	IOHIDManagerRef hid_mgr = 0x0;
 
 
 #if 0
-static void register_error(hid_device *device, const char *op)
+static void register_error(hid_device *dev, const char *op)
 {
 
 }
@@ -432,6 +433,7 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 		if ((vendor_id == 0x0 || vendor_id == dev_vid) &&
 		    (product_id == 0x0 || product_id == dev_pid)) {
 			struct hid_device_info *tmp;
+			bool is_usb_hid; /* Is this an actual HID usb device */
 			io_object_t iokit_dev;
 			kern_return_t res;
 			io_string_t path;
@@ -445,6 +447,8 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 				root = tmp;
 			}
 			cur_dev = tmp;
+
+			is_usb_hid = get_int_property(dev, CFSTR(kUSBInterfaceClass)) == kUSBHIDClass;
 
 			/* Get the Usage Page and Usage for this device. */
 			cur_dev->usage_page = get_int_property(dev, CFSTR(kIOHIDPrimaryUsagePageKey));
@@ -478,8 +482,15 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 			/* Release Number */
 			cur_dev->release_number = get_int_property(dev, CFSTR(kIOHIDVersionNumberKey));
 
-			/* Interface Number (Unsupported on Mac)*/
-			cur_dev->interface_number = -1;
+			/* We can only retrieve the interface number for USB HID devices.
+			 * IOKit always seems to return 0 when querying a standard USB device
+			 * for its interface. */
+			if (is_usb_hid) {
+				/* Get the interface number */
+				cur_dev->interface_number = get_int_property(dev, CFSTR(kUSBInterfaceNumber));
+			} else {
+				cur_dev->interface_number = -1;
+			}
 		}
 	}
 
@@ -941,7 +952,7 @@ int HID_API_EXPORT hid_send_feature_report(hid_device *dev, const unsigned char 
 
 int HID_API_EXPORT hid_get_feature_report(hid_device *dev, unsigned char *data, size_t length)
 {
-	CFIndex len = length;
+	CFIndex len = length - 1;
 	IOReturn res;
 
 	/* Return if the device has been unplugged. */
@@ -951,9 +962,9 @@ int HID_API_EXPORT hid_get_feature_report(hid_device *dev, unsigned char *data, 
 	res = IOHIDDeviceGetReport(dev->device_handle,
 	                           kIOHIDReportTypeFeature,
 	                           data[0], /* Report ID */
-	                           data, &len);
+	                           data + 1, &len);
 	if (res == kIOReturnSuccess)
-		return len;
+		return len + 1;
 	else
 		return -1;
 }
